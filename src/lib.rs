@@ -1,5 +1,9 @@
 use rayon::prelude::*;
-use std::{fs, path::Path};
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader, Read},
+    path::Path,
+};
 
 pub struct Image {
     pub filename: String,
@@ -7,7 +11,7 @@ pub struct Image {
     pub width: usize,
     pub height: usize,
     pub max_val: u16,
-    pixels: Vec<(u8, u8, u8)>,
+    pixels: Box<[u8]>,
 }
 
 impl Image {
@@ -17,7 +21,7 @@ impl Image {
         width: usize,
         height: usize,
         max_val: u16,
-        pixels: Vec<(u8, u8, u8)>,
+        pixels: Box<[u8]>,
     ) -> Image {
         Image {
             filename,
@@ -30,38 +34,31 @@ impl Image {
     }
 
     pub fn from_file(path: &Path) -> Result<Image, Box<dyn std::error::Error>> {
-        let buf: String = fs::read_to_string(path)?;
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
 
-        let pieces: Vec<&str> = buf
-            .par_lines()
-            .filter(|line| {
-                let line = line.trim();
-                !line.is_empty() && !line.starts_with('#')
+        let mut iter = reader
+            .by_ref()
+            .lines()
+            .filter_map(|line| line.ok())
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .flat_map(|line| {
+                line.split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
             })
-            .flat_map_iter(|line| line.split_whitespace())
-            .collect();
+            .take(4);
 
-        let (magic_number, width, height, max_val, pixel_data) = (
-            pieces[0],
-            pieces[1]
-                .parse::<usize>()
-                .expect("Invalid image width found."),
-            pieces[2]
-                .parse::<usize>()
-                .expect("Invalid image height found."),
-            pieces[3].parse::<u16>().expect("Invalid max value found."),
-            &pieces[4..],
-        );
+        let magic_number: String = iter.next().ok_or("Missing magic number")?;
+        let width: usize = iter.next().ok_or("Missing width")?.parse()?;
+        let height: usize = iter.next().ok_or("Missing height")?.parse()?;
+        let max_val: u16 = iter.next().ok_or("Missing max_val")?.parse()?;
 
-        let pixels: Vec<(u8, u8, u8)> = pixel_data
-            .par_chunks(3)
-            .map(|chunk| {
-                let r = chunk[0].parse().unwrap();
-                let g = chunk[1].parse().unwrap();
-                let b = chunk[2].parse().unwrap();
-                (r, g, b)
-            })
-            .collect();
+        let pixel_count: usize = width * height * 3;
+        let mut pixels = vec![0u8; pixel_count].into_boxed_slice();
+
+        reader.read_exact(&mut pixels)?;
 
         let filename = path
             .file_name()
@@ -82,8 +79,13 @@ impl Image {
 
     pub fn to_minifb_buffer(&self) -> Vec<u32> {
         self.pixels
-            .par_iter()
-            .map(|&(r, g, b)| (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
+            .chunks(3)
+            .map(|chunk| {
+                let r = chunk[0] as u32;
+                let g = chunk[1] as u32;
+                let b = chunk[2] as u32;
+                (r << 16) | (g << 8) | b
+            })
             .collect()
     }
 }
