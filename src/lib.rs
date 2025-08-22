@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{BufRead, BufReader, Read},
     path::Path,
 };
@@ -51,14 +51,32 @@ impl Image {
             .take(4);
 
         let magic_number: String = iter.next().ok_or("Missing magic number")?;
+        if magic_number != "P3" && magic_number != "P6" {
+            return Err("Unsupported PPM format".into());
+        }
+
         let width: usize = iter.next().ok_or("Missing width")?.parse()?;
         let height: usize = iter.next().ok_or("Missing height")?.parse()?;
         let max_val: u16 = iter.next().ok_or("Missing max_val")?.parse()?;
 
-        let pixel_count: usize = width * height * 3;
-        let mut pixels = vec![0u8; pixel_count].into_boxed_slice();
-
-        reader.read_exact(&mut pixels)?;
+        let pixels: Box<[u8]> = match magic_number.as_str() {
+            "P6" => {
+                let pixel_count = width * height * 3;
+                let mut buf = vec![0u8; pixel_count];
+                reader.read_exact(&mut buf)?;
+                buf.into_boxed_slice()
+            }
+            "P3" => {
+                let mut contents = String::new();
+                reader.read_to_string(&mut contents)?;
+                contents
+                    .par_split_whitespace()
+                    .map(|val| val.parse::<u8>().unwrap())
+                    .collect::<Vec<u8>>()
+                    .into_boxed_slice()
+            }
+            _ => return Err("Unsupported magic number".into()),
+        };
 
         let filename = path
             .file_name()
@@ -79,7 +97,7 @@ impl Image {
 
     pub fn to_minifb_buffer(&self) -> Vec<u32> {
         self.pixels
-            .chunks(3)
+            .par_chunks(3)
             .map(|chunk| {
                 let r = chunk[0] as u32;
                 let g = chunk[1] as u32;
